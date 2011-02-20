@@ -1,10 +1,14 @@
 module Hipe::IrcLogs
   class OmniTable
-    def initialize cols, rows
-      @cols = cols
+    def initialize rows, cols
+      @cols = cols.each.with_index.map do |c,i|
+        c.respond_to?(:render) ? c : Col.new({:column_index => i}.merge(c))
+      end
       @rows = rows
+      @headers = true
     end
-    attr_reader :cols, :rows
+    attr_reader :cols, :rows, :headers
+    alias_method :headers?, :headers
     def prerender
       @prerendered = @rows.map { |r| render_row(r) }
     end
@@ -31,9 +35,26 @@ module Hipe::IrcLogs
             @widths[i] > v.length or @widths[i] = v.length
           end
         end
-        (0..@widths.size-1).map { |i| "%#{@widths[i]}s" }.join(sep)
+        (0..@widths.size-1).map do |i|
+          "%#{'-' if :left == @cols[i].align}#{@widths[i]}s"
+        end.join(sep)
       end
     end
     def sep ; '  ' end
+    def no_headers!; @headers = false; self end
+    class Col
+      def initialize h
+        @label = h[:label]
+        @align = h[:align] || :right
+        if h[:column_index]
+          @intern = h[:column_index]
+          @label.nil? and @label = "column #{h[:column_index]+1}"
+        end
+      end
+      attr_reader :label, :align, :intern
+      def render v
+        v.to_s
+      end
+    end
   end
 end
