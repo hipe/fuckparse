@@ -1,7 +1,7 @@
 /**
-* features: colors, help screen formatting
+* Features: colors, help screen formatting, defaults, (ruby) OptionParser like 
+* api.
 *
-* wishlist: defaults
 */
 
 var sys  = require('sys'),
@@ -223,6 +223,8 @@ Parameter.prototype = {
   },
   _processOpts : function(o) {
     if (o['default']) {
+      if (!this.takesArgument()) throw new SyntaxSyntaxError("cannot define"+
+      " defaults unless the parameter takes an argument.");
       this._defaultIsDefined = true;
       this._default = o['default'];
     }
@@ -308,6 +310,7 @@ Command.prototype = {
     this.c = { err : sys }; // execution context, (cout, cerr, request)
     this._consume = true; // alters the argv passed to parse(), @todo setters
     this._skipOverUnparsableArguments = false; // @todo setters
+    this._doOfficiousHelp = true; // @todo setter
     this._stopOnDashDash = true; // @todo setters
     this.request = null; // not set unless anything is default
      // or anything was parsed
@@ -335,6 +338,7 @@ Command.prototype = {
     this._interpreterName = this.argv.shift();
     this._programName = this.argv.shift();
     if (!this._parseOpts()) return false;
+    this._applyDefaults();
     this.printHelp();
     return this.c.request;
   },
@@ -355,6 +359,17 @@ Command.prototype = {
       }
     }
     return true;
+  },
+  _applyDefaults : function() {
+    var p, r;
+    for (var i = this.parameters.length; i--; ) {
+      if (!this.parameters[i]._defaultIsDefined) continue;
+      p = this.parameters[i];
+      r = this.c.request || (this.c.request = new Request());
+      if (-1 != r.keys.indexOf(p.intern())) continue;
+      r.values[p.intern()] = p._default;
+      r.keys.push(p.intern());
+    }
   },
   _parseOpt : function(tok) {
     var md = (/^(-(?:-([^=]+)|([^=]+)))(?:=(.+)|(.*))$/).exec(tok); //ballsy
@@ -409,7 +424,6 @@ Command.prototype = {
     }
     while (consumeAmt--) this.argv.shift();
     var req = this.c.request || ( this.c.request = new Request() );
-    debugger;
     req.values[p.intern()] = useValue || true;
     if (-1==req.keys.indexOf(p.intern())) req.keys.push(p.intern());
     if (p.hasFunction() && false ==
