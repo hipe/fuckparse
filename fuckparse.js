@@ -1,7 +1,13 @@
+/**
+* features: colors, help screen formatting
+*
+* wishlist: defaults
+*/
+
 var sys  = require('sys'),
     util = require('util'),
     path = require('path'),
-    log = sys.puts;
+    Puts = sys.puts;
 
 var fuckparse = exports;
 
@@ -21,6 +27,65 @@ var Color = {
       return Color.esc +'[' + these.join(';') + 'm' + str + Color.esc + '[0m';
     }
   }
+};
+
+var Table = { methods : {} };
+Table.table = function(rows, m) {
+  this.colOpts = m || [];
+  this.rows = rows;
+  this.defaultSeparator = '';
+  this.defaultFillChar = ' ';
+};
+Table.table.prototype = {
+  renderTo : function(cout) {
+    this.cout = cout;
+    this._render();
+  },
+  toString : function() { return 'Table:'+this.rows.length+' rows'; },
+  _render : function() {
+    if (!this.widths) { this._calculateWidths(); }
+    for (var i = 0, j = this.rows.length; i < j; i++) {
+      var row = this.rows[i];
+      if (row[0] == 'header') {
+        this.cout.puts(row[1]);
+        continue;
+      }
+      var rowRender = [];
+      for (var k = 1; k < row.length; k++ ) {
+        var colOpt = this.colOpts[k-1];
+        var align = (colOpt && colOpt.align) || 'right';
+        var str = row[k].toString();
+        var width = this.widths[k] || 0;
+        var add = width - str.length;
+        var pad = add ? Array(add+1).join(this.defaultFillChar) : '';
+        var useStr = align == 'left' ? (str + pad) : (pad + str);
+        if (colOpt && colOpt.padLeft) useStr = colOpt.padLeft + useStr;
+        if (colOpt && colOpt.padRight) useStr += colOpt.padRight;
+        rowRender[k] = useStr;
+      }
+      this.cout.puts(rowRender.join(this.defaultSeparator));
+    }
+  },
+  _calculateWidths : function() {
+    this.widths = [];
+    for (var i = this.rows.length; --i; ) {
+      var row = this.rows[i];
+      if ('header'==row[0]) continue;
+      if (this.widths.length < row.length) {
+        for (var k=this.widths.length; k<row.length; k++)
+          this.widths[k] = 0;
+      }
+      for (var j=1; j < row.length; j++) {
+        if (row[j] && row[j].toString().length > this.widths[j]) {
+          this.widths[j] = row[j].toString().length;
+        }
+      }
+    }
+  }
+};
+Table.methods.render = function(rows, colsOpts, cout) {
+  var tt = new Table.table(rows, colsOpts);
+  tt.renderTo(cout);
 };
 
 var SyntaxSyntaxError = function(msg) {
@@ -66,12 +131,17 @@ Parameter.prototype = {
         throw new Error("wtf: "+arg);
       }
     }
-    this._validate();
+    this._validateDefinition();
     return this; // could be factory later
   },
+  takesArgument : function() { return this._takesArgument; },
+  argumentIsRequired : function() { return this._argumentIsRequired; },
+  isNoable : function() { return this._isNoable; },
+  hasFunction : function(){ return !! this._f; },
+  getFunction : function(){ return this._f; },
   desc : function() {
+    if (arguments.length == 0) return (this._desc || []);
     if (!this._desc) this._desc = [];
-    if (arguments.length == 0) return this._desc;
     if (arguments.length == 1) {
       if ('string' == typeof(arguments[0])) {
         this._desc.push(arguments[0]);
@@ -86,23 +156,55 @@ Parameter.prototype = {
     return null;
   },
   toString : function() {
-    return this.getLongSyntaxToken();
+    return this.getLongestSyntax();
   },
-  getLongSyntaxToken : function() {
-    if (0==this.longs.length) return undefined;
+  getLongSyntaxAt : function(i) {
+    var len = this.longs.length;
+    if (0==len) return undefined;
+    if (undefined == i || -1 == i || i >= len) i = len-1;
+    else if (i < 0) i = 0;
     var n = this._isNoable ? '[no-]' : '';
-    return '--'+n+ this.longs[this.longs.length-1] + this._longSyntaxTail;
+    return '--'+n+ this.longs[i] + this._longSyntaxTail;
   },
-  getShortSyntaxToken : function() {
-    if (0==this.shorts.length) return undefined;
-    return '-' + this.shorts[this.shorts.length-1] + this._shortSyntaxTail;
+  getShortSyntaxAt : function(i) {
+    var len = this.shorts.length;
+    if (0==len) return undefined;
+    if (undefined == i || -1 == i || i >= len) i = len-1;
+    else if (i < 0) i = 0;
+    return '-' + this.shorts[i] + this._shortSyntaxTail;
   },
-  getShortestSyntaxToken : function() {
-    if (this.shorts.length) return this.getShortSyntaxToken();
-    return this.getLongSyntaxToken();
+  getLongestSyntax : function() {
+    if (this.longs.length) return this.getLongSyntaxAt();
+    return this.getShortSyntaxAt();
+  },
+  getShortestSyntax : function() {
+    if (this.shorts.length) return this.getShortSyntaxAt();
+    return this.getLongSyntaxAt();
+  },
+  getShortSyntaxDesc : function() {
+    return this._getSyntaxDesc('shorts');
+  },
+  getLongSyntaxDesc : function() {
+    return this._getSyntaxDesc('longs');
+  },
+  _getSyntaxDesc : function(which) {
+    var them = this[which], a = [], dash = (('shorts'==which) ? '-' : '--');
+    if (0==them.length) return '';
+    for (var i = 0, last = them.length - 2; i <= last; i++) {
+      a.push(dash + them[i]);
+    }
+    a.push(this['shorts'==which ? 'getShortSyntaxAt' : 'getLongSyntaxAt']());
+    return a.join(',');
   },
   intern : function() {
     return this.longs.length ? this.longs[0] : this.shorts[0];
+  },
+  casual : function() {
+    return this.longs.length ? ('--'+this.longs[0]) : ('-'+this.shorts[0]);
+  },
+  getLabel : function() {
+    var str = this.intern().replace(/[_-]/g, ' ');
+    return str.length > 1 ? str : null;
   },
   _parseSwitch : function(sw) {
     var md;
@@ -139,19 +241,19 @@ Parameter.prototype = {
 
     if (undefined != (x = this._takesArgument) && x != takesArg )
       throw new SyntaxSyntaxError('shape of "--'+stem+'" does not match'+
-        ' that of "--'+this.intern()+'" (takes arg/not takes arg).');
+        ' that of "'+this.casual()+'" (takes arg/not takes arg).');
 
     if (undefined != (x = this._argumentIsRequired) && x != argRequired)
       throw new SyntaxSyntaxError('shape of "--'+stem+'" does not match'+
-        ' that of "--'+this.intern()+'" (arg required/not required).');
+        ' that of "'+this.casual()+'" (arg required/not required).');
 
     if (undefined != (x = this._longArgLabel) && x != argLabel)
       throw new SyntaxSyntaxError('shape of "--'+stem+'" does not match'+
-        ' that of "--'+this.intern()+'" ('+argLabel+')');
+        ' that of "'+this.casual()+'" ('+argLabel+'/'+this._longArgLabel+')');
 
     if (undefined != (x = this._longSyntaxTail) && x != syntaxTail )
       throw new SyntaxSyntaxError('shape of "--'+stem+'" does not match'+
-        ' that of "--'+this.intern()+'" ("'+syntaxTail+'")');
+        ' that of "'+this.casual()+'" ("'+syntaxTail+'")');
 
     this.longs.push(stem);
     this._takesArgument = takesArg;
@@ -164,11 +266,9 @@ Parameter.prototype = {
     if (-1 != this.shorts.indexOf(stem)) {
       throw new SyntaxSyntaxError('cannot reopen definition of "-'+stem+'"');
     }
-    if (argLabel) {
-      if (undefined != (x = this._shortArgLabel) && x != argLabel) {
-        throw new SyntaxSyntaxError('shape of "-'+stem+'" changed: '+
-          'cannot redefine argument label from "'+x+'" to "'+argLabel+'"');
-      }
+    if (undefined != (x = this._shortArgLabel) && x != argLabel) {
+      throw new SyntaxSyntaxError('shape of "-'+stem+'" changed: '+
+        'cannot redefine argument label from "'+x+'" to "'+argLabel+'"');
     }
     this.shorts.push(stem);
     if (argLabel) {
@@ -182,7 +282,7 @@ Parameter.prototype = {
       this._shortSyntaxTail = '';
     }
   },
-  _validate : function() {
+  _validateDefinition : function() {
     if (this.shorts.length == 0 && this.longs.length == 0) {
       throw new SyntaxSyntaxError("a parameter definition must have at least"+
       " one short or long switch");
@@ -203,53 +303,185 @@ Command.prototype = {
   commandInit : function() {
     this.parameters = [];
     this.paramsHash = {};
-    this.shorts = {};
-    this.longs = {};
-    this.err = sys; // std err stream
+    this.shortsHash = {};
+    this.longsHash = {};
+    this.c = { err : sys }; // execution context, (cout, cerr, request)
+    this._consume = true; // alters the argv passed to parse(), @todo setters
+    this._skipOverUnparsableArguments = false; // @todo setters
+    this._stopOnDashDash = true; // @todo setters
+    this.request = null; // not set unless anything is default
+     // or anything was parsed
   },
   on : function() {
     param = Parameter.build(arguments);
     if (undefined != this.paramsHash[param.intern()]) {
-      throw new Error("no redefining: "+param.intern());
+      throw new SyntaxSyntaxError("no redefining: "+param.intern());
     }
-    this.parameters.push(param);
-    this.paramsHash[param.intern()] = this.parameters.length-1;
+    var paramIdx = this.parameters.length;
+    this.parameters[paramIdx] = param;
+    this.paramsHash[param.intern()] = paramIdx;
+    var which = ['shorts', 'longs'], w;
+    for (w = which.length; w--;) { // @todo refactor after unit tests
+      for (var i = param[which[w]].length; i--;) {
+        if (this[which[w]+'Hash'][param[which[w]][i]])
+          throw new SyntaxSyntaxError("cannot redefine -"+
+            ('longs'==which[w]?'-':'')+param[which[w]][i]);
+        this[which[w]+'Hash'][param[which[w]][i]] = paramIdx;
+      }
+    }
   },
   parse : function(args) {
-    this._interpreterPathname = args[0];
-    this._programName = args[1];
-    this.argv = args.slice(2); // for now ignore 'node', 'filename'
-    this.parseOpts();
+    this.argv = this._consume ? args : args.slice(0);
+    this._interpreterName = this.argv.shift();
+    this._programName = this.argv.shift();
+    if (!this._parseOpts()) return false;
+    this.printHelp();
+    return this.c.request;
   },
-  parseOpts : function() {
-    this.err.puts(this.help());
-    while ( false && this.argv.length) {
-
+  _parseOpts : function() {
+    this.i = 0;
+    while (this.i < this.argv.length) {
+      var curTok = this.argv[this.i];
+      var chr = curTok.substr(0,1);
+      if ('-' == chr) {
+        if (!this._parseOpt(curTok)) return false;
+      } else {
+        if (this._skipOverUnparsableArguments) {
+          this.i++;
+          continue;
+        } else {
+          return this._parseOptError('Unexpected argument: "'+curTok+'"');
+        }
+      }
     }
+    return true;
+  },
+  _parseOpt : function(tok) {
+    var md = (/^(-(?:-([^=]+)|([^=]+)))(?:=(.+)|(.*))$/).exec(tok); //ballsy
+    var asUsed = md[1], longStem = md[2], shortStem = md[3], eqArg = md[4],
+      xtra = (md[5] || ''), eachStem, eachAsUsed, i, last;
+    var useLong = longStem   ?  (longStem + xtra) : null;
+    var useShort = shortStem ? (shortStem + xtra) : null;
+    var which = useShort ? 'shorts' : 'longs';
+    if (useLong) {
+      eachStem = [useLong]; eachAsUsed = [asUsed];
+    } else {
+      md = (/^([^0-9]*)(.*)$/).exec(useShort);
+      if (md[1].length > 0 && md[2].length > 0) {
+        if (eqArg) return this._parseOptError("Ambiguous parameter/argument "+
+          'delimiter: "'+md[2]+'", "'+eqArg+'"'); // haha -xkcd20=xd6 fml
+        useShort = md[1]; eqArg = md[2];
+      }
+      eachStem = useShort.split('');
+      eachAsUsed = Array(eachStem.length);
+      for (i=eachStem.length; i--;) eachAsUsed[i] = '-'+eachStem[i];
+    }
+    var hashLookup = this[which+'Hash'], r;
+    for (i = 0, last = eachStem.length-1; i <= last; i++) {
+      var stem = eachStem[i], paramIdx = hashLookup[stem], p;
+      asUsed = eachAsUsed[i];
+      if (undefined == paramIdx)
+        return this._parseOptError('Unrecognized option '+asUsed);
+      p = this.parameters[paramIdx];
+      r = this._parseArgvWithParam(p, asUsed, i == last ? eqArg : undefined);
+      if (!r) return r;
+    }
+    return r; // should not be semantic only bool true here
+  },
+  _parseArgvWithParam : function(p, asUsed, eqArg) {
+    var useValue = undefined, consumeAmt = 1;
+    if (undefined == eqArg) {
+      if (p.takesArgument()) {
+        if (this.i < (this.argv.length - 1) &&
+          '-' != this.argv[this.i + 1].substr(0,1)) {
+            consumeAmt += 1;
+            useValue = this.argv[this.i +1];
+        } else if (p.argumentIsRequired()) {
+          return this._parseOptError('missing required argument for "'+
+            asUsed+'"');
+        }
+      }
+    } else {
+      if (!p.takesArgument()) return this._parseOptError(
+        'Unexpected argument "'+eqArg+'" '+'for '+asUsed
+      );
+      useValue = eqArg;
+    }
+    while (consumeAmt--) this.argv.shift();
+    var req = this.c.request || ( this.c.request = new Request() );
+    debugger;
+    req.values[p.intern()] = useValue || true;
+    if (-1==req.keys.indexOf(p.intern())) req.keys.push(p.intern());
+    if (p.hasFunction() && false ==
+      p.getFunction().call(this, useValue || true, p, asUsed)) return false;
+    return true;
+  },
+  _parseOptError : function(msg) {
+    if (msg) this.c.err.puts(msg);
+    this.c.err.puts(this.strong('usage: ')+this.usage());
+    this.c.err.puts(this.invite());
+    return false; // important
   },
   // output formatting & display
   color : Color.methods.color,
+  tableize : Table.methods.render,
   strong : function(s) { return this.color(s, 'bold', 'green'); },
-  help : function() {
-    var tbl = [];
-    this.err.puts(this.strong('usage: ')+this.usage());
-    return 'done.';
+  printHelp : function() {
+    this.c.err.puts(this.strong('usage: ')+this.usage());
+    var rows = [];
+    if (this.parameters.length) {
+      rows.push(['header', this.strong('options:')]);
+      for (var i=0; i<this.parameters.length; i++) {
+        var p = this.parameters[i];
+        var descLines = p.desc();
+        if (descLines.length == 0) descLines = [p.getLabel() || ''];
+        rows.push(['row', (p.getShortSyntaxDesc() || ''),
+          (p.getLongSyntaxDesc() || ''), descLines[0]]);
+        for (var j = 1; j < descLines.length; j++) {
+          rows.push(['row', '', '', descLines[j]]);
+        }
+      }
+    }
+    this.tableize(rows,
+      [{align:'right', padRight:'    '},
+       {align:'left',  padRight:'      '},
+       {align:'left'}
+      ],this.c.err);
   },
   getProgramName : function() {
     return path.basename(this._programName);
+  },
+  getInterpreterName : function() {
+    return this._interpreterName;
   },
   usage : function() {
     var parts = [];
     var opts = [];
     for (var i = 0; i < this.parameters.length; i++) {
-      opts.push('['+this.parameters[i].getShortestSyntaxToken()+']');
+      opts.push('['+this.parameters[i].getShortestSyntax()+']');
     }
     parts.push(this.getProgramName());
     if (opts.length) parts.push(opts.join(' '));
     if ('meh') parts.push('[args]');
     return parts.join(' ');
+  },
+  invite : function() {
+    return this.strong(this.getProgramName()+' -h')+' for help.';
   }
 };
+var Request = function() {
+  this.keys = [];
+  this.values = {};
+};
+Request.prototype = {
+  toString : function() {
+    var a = [];
+    for (var i=0; i < this.keys.length; i++)
+      a.push(this.keys[i]+':'+this.values[this.keys[i]]); // not json
+    return 'request:{'+a.join(',')+'}';
+  }
+};
+
 var Fuckparse = function(args) {
   this.commandInit();
   this.fuckparseInit.apply(this, args);
