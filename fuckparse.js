@@ -1,5 +1,5 @@
 /**
-* Features: colors, help screen formatting, defaults, (ruby) OptionParser like 
+* Features: colors, help screen formatting, defaults, (ruby) OptionParser like
 * api.
 *
 */
@@ -310,10 +310,13 @@ Command.prototype = {
     this.c = { err : sys }; // execution context, (cout, cerr, request)
     this._consume = true; // alters the argv passed to parse(), @todo setters
     this._skipOverUnparsableArguments = false; // @todo setters
-    this._doOfficiousHelp = true; // @todo setter
-    this._stopOnDashDash = true; // @todo setters
-    this.request = null; // not set unless anything is default
-     // or anything was parsed
+    this.officious = { // set officious.enabled.help = false
+      enabled : { help : true }, list   : ['help'],
+      longs   : { help : 0    }, shorts : { h : 0 }
+    };
+    this._stopOnDashDash = true; // @todo implement
+    this.request = null; // not set unless anything is parsed or set
+      // via defaults
   },
   on : function() {
     param = Parameter.build(arguments);
@@ -332,6 +335,7 @@ Command.prototype = {
         this[which[w]+'Hash'][param[which[w]][i]] = paramIdx;
       }
     }
+    return param;
   },
   parse : function(args) {
     this.argv = this._consume ? args : args.slice(0);
@@ -339,7 +343,6 @@ Command.prototype = {
     this._programName = this.argv.shift();
     if (!this._parseOpts()) return false;
     this._applyDefaults();
-    this.printHelp();
     return this.c.request;
   },
   _parseOpts : function() {
@@ -395,9 +398,13 @@ Command.prototype = {
     for (i = 0, last = eachStem.length-1; i <= last; i++) {
       var stem = eachStem[i], paramIdx = hashLookup[stem], p;
       asUsed = eachAsUsed[i];
-      if (undefined == paramIdx)
-        return this._parseOptError('Unrecognized option '+asUsed);
-      p = this.parameters[paramIdx];
+      if (undefined == paramIdx){
+        if (!(p = this._getOfficious(useShort || useLong, which))) {
+          return this._parseOptError('Unrecognized option '+asUsed);
+        }
+      } else {
+        p = this.parameters[paramIdx];
+      }
       r = this._parseArgvWithParam(p, asUsed, i == last ? eqArg : undefined);
       if (!r) return r;
     }
@@ -431,9 +438,10 @@ Command.prototype = {
     return true;
   },
   _parseOptError : function(msg) {
-    if (msg) this.c.err.puts(msg);
+    var i;
+    msg && this.c.err.puts(msg);
     this.c.err.puts(this.strong('usage: ')+this.usage());
-    this.c.err.puts(this.invite());
+    (i = this.invite()) && this.c.err.puts(i);
     return false; // important
   },
   // output formatting & display
@@ -480,7 +488,24 @@ Command.prototype = {
     return parts.join(' ');
   },
   invite : function() {
-    return this.strong(this.getProgramName()+' -h')+' for help.';
+    if (this.officious.enabled.help)
+      return this.strong(this.getProgramName()+' -h')+' for help.';
+  },
+  _getOfficious : function(stem, shortsOrLongs) {
+    var idx = this.officious[shortsOrLongs][stem];
+    if (undefined == idx) return null;
+    var name = this.officious.list[idx];
+    if (! this.officious.enabled[name]) return null;
+    return this[name+'OfficiousCommand'](); // e.g. helpOfficiousCommand()
+  },
+  helpOfficiousCommand : function() {
+    if (this._helpOfficiousCommand) return this._helpOfficiousCommand;
+    this._helpOfficiousCommand = this.on('-h', '--help', this.onHelp );
+    return this._helpOfficiousCommand;
+  },
+  onHelp : function() {
+    this.printHelp();
+    return false; // don't do any further processing, we are done.
   }
 };
 var Request = function() {
