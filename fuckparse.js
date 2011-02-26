@@ -1,10 +1,27 @@
 var sys  = require('sys'),
     util = require('util'),
+    path = require('path'),
     log = sys.puts;
 
 var fuckparse = exports;
 
 fuckparse.build = function() { return new Fuckparse(arguments); };
+
+var Color = {
+  codes : {'bold':1,'blink':5,'dark_red':31,'green':32,'yellow':33,
+    'blue':34,'purple':35,'cyan':36,'white':37,'red':38
+  },
+  esc : String.fromCharCode(0x1B), // in ruby/php we could do "\e"
+  methods : {
+    color : function(str) {
+      var these = [], c;
+      for (var i = 1; i < arguments.length; i++) {
+        (c = Color.codes[arguments[i]]) && these.push(c.toString());
+      }
+      return Color.esc +'[' + these.join(';') + 'm' + str + Color.esc + '[0m';
+    }
+  }
+};
 
 var SyntaxSyntaxError = function(msg) {
   this.name = 'SyntaxSyntaxError';
@@ -69,17 +86,20 @@ Parameter.prototype = {
     return null;
   },
   toString : function() {
-    return this.getSyntaxTokenLong();
+    return this.getLongSyntaxToken();
   },
-  getSyntaxTokenLong : function() {
-    if (this.longs.length) {
-      var n = this._isNoable ? '[no-]' : '';
-      return '--'+n+ this.longs[this.longs.length-1] + this._longSyntaxTail;
-    }
-    return getSyntaxTokenShort();
+  getLongSyntaxToken : function() {
+    if (0==this.longs.length) return undefined;
+    var n = this._isNoable ? '[no-]' : '';
+    return '--'+n+ this.longs[this.longs.length-1] + this._longSyntaxTail;
   },
-  getSyntaxTokenShort : function() {
+  getShortSyntaxToken : function() {
+    if (0==this.shorts.length) return undefined;
     return '-' + this.shorts[this.shorts.length-1] + this._shortSyntaxTail;
+  },
+  getShortestSyntaxToken : function() {
+    if (this.shorts.length) return this.getShortSyntaxToken();
+    return this.getLongSyntaxToken();
   },
   intern : function() {
     return this.longs.length ? this.longs[0] : this.shorts[0];
@@ -181,16 +201,53 @@ var FuckMeShorter = new RegExp(
 var Command = function() { };
 Command.prototype = {
   commandInit : function() {
-    this.parameters = {};
+    this.parameters = [];
+    this.paramsHash = {};
     this.shorts = {};
     this.longs = {};
+    this.err = sys; // std err stream
   },
   on : function() {
     param = Parameter.build(arguments);
-    if (this.parameters[param.intern()]) {
+    if (undefined != this.paramsHash[param.intern()]) {
       throw new Error("no redefining: "+param.intern());
     }
-    this.parameters[param.intern()] = param;
+    this.parameters.push(param);
+    this.paramsHash[param.intern()] = this.parameters.length-1;
+  },
+  parse : function(args) {
+    this._interpreterPathname = args[0];
+    this._programName = args[1];
+    this.argv = args.slice(2); // for now ignore 'node', 'filename'
+    this.parseOpts();
+  },
+  parseOpts : function() {
+    this.err.puts(this.help());
+    while ( false && this.argv.length) {
+
+    }
+  },
+  // output formatting & display
+  color : Color.methods.color,
+  strong : function(s) { return this.color(s, 'bold', 'green'); },
+  help : function() {
+    var tbl = [];
+    this.err.puts(this.strong('usage: ')+this.usage());
+    return 'done.';
+  },
+  getProgramName : function() {
+    return path.basename(this._programName);
+  },
+  usage : function() {
+    var parts = [];
+    var opts = [];
+    for (var i = 0; i < this.parameters.length; i++) {
+      opts.push('['+this.parameters[i].getShortestSyntaxToken()+']');
+    }
+    parts.push(this.getProgramName());
+    if (opts.length) parts.push(opts.join(' '));
+    if ('meh') parts.push('[args]');
+    return parts.join(' ');
   }
 };
 var Fuckparse = function(args) {
