@@ -500,7 +500,7 @@ Command.prototype = {
   },
   helpOfficiousCommand : function() {
     if (this._helpOfficiousCommand) return this._helpOfficiousCommand;
-    this._helpOfficiousCommand = this.on('-h', '--help', 'this screen', 
+    this._helpOfficiousCommand = this.on('-h', '--help', 'this screen',
       this.onHelp );
     return this._helpOfficiousCommand;
   },
