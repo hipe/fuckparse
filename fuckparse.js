@@ -17,10 +17,9 @@ fuckparse.build = function() { return new Fuckparse(arguments); };
 fuckparse.oxfordComma = function() {
   var args = []; // es muss sein
   for (var i = arguments.length ; i--; ) { args[i] = arguments[i]; }
-  var each = ('function' == typeof(args[args.length-1])) ?
-    args[args.length-1].pop() : null;
+  var each = ('function' == typeof(args[args.length-1])) ? args.pop() : null;
   var sep = args[2] || ', ', lastSep = args[1] || ' and ', arr = args[0];
-  if (arr.length <= 1) return arr[0];
+  if (arr.length <= 1) return arr[0]; // truly undefined, for now
   if (each) { for(i = arr.length; i--;) arr[i] = each(arr[i]); }
   var parts = [[arr.pop(), arr.pop()].reverse.join(lastSep)];
   if (arr.length) parts.push(arr.join(sep));
@@ -122,6 +121,7 @@ Parameter.prototype = {
     this.shorts = [];
     this.longs = [];
     this._takesArgument = undefined;
+    this._isRepeatable = undefined;
     this._argumentIsRequired = undefined;
     this._argumentLabel = undefined;
     this._defaultIsDefined = undefined;
@@ -148,6 +148,7 @@ Parameter.prototype = {
     this._validateDefinition();
     return this; // could be factory later
   },
+  isRepeatable : function() { return this._isRepeatable; },
   takesArgument : function() { return this._takesArgument; },
   argumentIsRequired : function() { return this._argumentIsRequired; },
   isNoable : function() { return this._isNoable; },
@@ -236,6 +237,11 @@ Parameter.prototype = {
     this._f = f;
   },
   _processOpts : function(o) {
+    if (o['list']) {
+      if (o['default']) throw new SyntaxSyntaxError("for now, list-type ",
+      "parameters cannot have default arguments.");
+      this._isRepeatable = true;
+    }
     if (o['default']) {
       if (!this.takesArgument()) throw new SyntaxSyntaxError("cannot define"+
       " defaults unless the parameter takes an argument.");
@@ -389,13 +395,13 @@ Command.prototype = {
     }
   },
   _parseOpt : function(tok) {
-    var md = (/^(-(?:-([^=]+)|([^=]+)))(?:=(.+)|(.*))$/).exec(tok); //ballsy
+    var md = (/^(-(?:-([^=]+)|([^=]*)))(?:=(.+)|(.*))$/).exec(tok); //ballsy
     var asUsed = md[1], longStem = md[2], shortStem = md[3], eqArg = md[4],
       xtra = (md[5] || ''), eachStem, eachAsUsed, i, last;
-    var useLong = longStem   ?  (longStem + xtra) : null;
-    var useShort = shortStem ? (shortStem + xtra) : null;
-    var which = useShort ? 'shorts' : 'longs';
-    if (useLong) {
+    var useLong = undefined == longStem ? null : (longStem + xtra);
+    var useShort = undefined == shortStem ? null : (shortStem + xtra);
+    var which = null == useShort ? 'longs' : 'shorts';
+    if ('longs' == which) {
       eachStem = [useLong]; eachAsUsed = [asUsed];
     } else {
       md = (/^([^0-9]*)(.*)$/).exec(useShort);
@@ -404,7 +410,7 @@ Command.prototype = {
           'delimiter: "'+md[2]+'", "'+eqArg+'"'); // haha -xkcd20=xd6 fml
         useShort = md[1]; eqArg = md[2];
       }
-      eachStem = useShort.split('');
+      eachStem = useShort == '' ? [''] : useShort.split('');
       eachAsUsed = Array(eachStem.length);
       for (i=eachStem.length; i--;) eachAsUsed[i] = '-'+eachStem[i];
     }
@@ -439,14 +445,34 @@ Command.prototype = {
       }
     } else {
       if (!p.takesArgument()) return this._parseOptError(
-        'Unexpected argument "'+eqArg+'" '+'for '+asUsed
-      );
+        'Unexpected argument "'+eqArg+'" '+'for '+asUsed);
       useValue = eqArg;
     }
+    if (!this._acceptParamValue(p, useValue, asUsed)) return false;
     while (consumeAmt--) this.argv.shift();
+    return true;
+  },
+  _acceptParamValue : function(p, useValue, asUsed) {
     var req = this.c.request || ( this.c.request = new Request() );
-    req.values[p.intern()] = useValue || true;
-    if (-1==req.keys.indexOf(p.intern())) req.keys.push(p.intern());
+    if (-1 == req.keys.indexOf(p.intern())) {
+      req.keys.push(p.intern());
+      if (p.isRepeatable()) {
+        if (p.takesArgument()) {
+          req.values[p.intern()] = [];
+        } else {
+          req.values[p.intern()] = 0;
+        }
+      }
+    }
+    if (p.isRepeatable()) {
+      if (p.takesArgument()) {
+        req.values[p.intern()].push(useValue || true);
+      } else {
+        req.values[p.intern()] += 1;
+      }
+    } else {
+      req.values[p.intern()] = useValue || true;
+    }
     if (p.hasFunction() && false ==
       p.getFunction().call(this, useValue || true, p, asUsed)) return false;
     return true;
