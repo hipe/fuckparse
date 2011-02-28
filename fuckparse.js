@@ -19,12 +19,14 @@ fuckparse.oxfordComma = function() {
   for (var i = arguments.length ; i--; ) { args[i] = arguments[i]; }
   var each = ('function' == typeof(args[args.length-1])) ? args.pop() : null;
   var sep = args[2] || ', ', lastSep = args[1] || ' and ', arr = args[0];
-  if (arr.length <= 1) return arr[0]; // truly undefined, for now
   if (each) { for(i = arr.length; i--;) arr[i] = each(arr[i]); }
-  var parts = [[arr.pop(), arr.pop()].reverse.join(lastSep)];
+  if (arr.length <= 1) return arr[0]; // truly undefined, for now
+  var parts = [[arr.pop(), arr.pop()].reverse().join(lastSep)];
   if (arr.length) parts.push(arr.join(sep));
   return parts.join(' ');
 };
+
+fuckparse.oxfordComma.quote = function(s) { return '"' + s + '"'; };
 
 var Color = {
   codes : {'bold':1,'blink':5,'dark_red':31,'green':32,'yellow':33,
