@@ -13,6 +13,20 @@ var fuckparse = exports;
 
 fuckparse.build = function() { return new Fuckparse(arguments); };
 
+// (ary [, lastSep [, sep]] [func])
+fuckparse.oxfordComma = function() {
+  var args = []; // es muss sein
+  for (var i = arguments.length ; i--; ) { args[i] = arguments[i]; }
+  var each = ('function' == typeof(args[args.length-1])) ?
+    args[args.length-1].pop() : null;
+  var sep = args[2] || ', ', lastSep = args[1] || ' and ', arr = args[0];
+  if (arr.length <= 1) return arr[0];
+  if (each) { for(i = arr.length; i--;) arr[i] = each(arr[i]); }
+  var parts = [[arr.pop(), arr.pop()].reverse.join(lastSep)];
+  if (arr.length) parts.push(arr.join(sep));
+  return parts.join(' ');
+};
+
 var Color = {
   codes : {'bold':1,'blink':5,'dark_red':31,'green':32,'yellow':33,
     'blue':34,'purple':35,'cyan':36,'white':37,'red':38
