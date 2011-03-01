@@ -44,6 +44,8 @@ var Color = {
   }
 };
 
+fuckparse.Color = Color;
+
 var Table = { methods : {} };
 Table.table = function(rows, m) {
   this.colOpts = m || [];
