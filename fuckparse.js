@@ -6,8 +6,7 @@
 
 var sys  = require('sys'),
     util = require('util'),
-    path = require('path'),
-    Puts = sys.puts;
+    path = require('path');
 
 var fuckparse = exports;
 
