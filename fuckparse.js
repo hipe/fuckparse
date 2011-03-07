@@ -585,7 +585,7 @@ Command.prototype = {
     if (this.parameters.length) {
       for (i=0; i<this.parameters.length; i++) {
         p = this.parameters[i];
-        if (! p._isOptionalParameter) break;
+        if (! p._isOptionalParameter) continue;
         if (!o) (o = 1) && rows.push(['header', this.strong('options:')]);
         var descLines = p.desc();
         if (descLines.length == 0) descLines = [p.getLabel() || ''];
@@ -595,9 +595,9 @@ Command.prototype = {
           rows.push(['row', '', '', descLines[j]]);
         }
       }
-      for ( ; i < this.parameters.length; i++) {
+      for (i=0 ; i < this.parameters.length; i++) {
         p = this.parameters[i];
-        if (! p._isPositionalParameter) continue; // note
+        if (! p._isPositionalParameter) continue;
         if (!a) (a = 1) && rows.push(['header', this.strong('arguments:')]);
         descLines = p.desc();
         if (descLines.length == 0) descLines = [p.getLabel() || ''];
@@ -620,15 +620,15 @@ Command.prototype = {
     return this._interpreterName;
   },
   usage : function() {
-    var parts = [], opts = [], args = [], p;
-    for (var i = 0; i < this.parameters.length; i++) {
+    var parts = [], opts = [], args = [], p, i;
+    for (i = 0; i < this.parameters.length; i++) {
       p = this.parameters[i];
-      if (! p._isOptionalParameter) break;
+      if (! p._isOptionalParameter) continue;
       opts.push('['+p.getShortestSyntax()+']');
     }
-    for ( ; i < this.parameters.length; i++) {
+    for (i = 0; i < this.parameters.length; i++) {
       p = this.parameters[i];
-      if (! p._isPositionalParameter) continue; // contrast w/ above!
+      if (! p._isPositionalParameter) continue;
       args.push(p.getSyntaxString());
     }
     parts.push(this.getProgramName());
