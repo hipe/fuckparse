@@ -111,16 +111,17 @@ var SyntaxSyntaxError = function(msg) {
 };
 util.inherits(SyntaxSyntaxError, Error);
 
-var Parameter = function() {
-  this.parameterInit();
+var OptionalParameter = function() {
+  this.optionalParameterInit();
 };
-Parameter.build = function(args){
+OptionalParameter.build = function(args){
   var p = new this();
   r = p.applyDefinition(args); // throws syntax error
   return r;
 };
-Parameter.prototype = {
-  parameterInit : function() {
+OptionalParameter.prototype = {
+  _isOptionalParameter : true,
+  optionalParameterInit : function() {
     this.shorts = [];
     this.longs = [];
     this._takesArgument = undefined;
@@ -323,8 +324,82 @@ var FuckMeLonger = new RegExp(
 var FuckMeShorter = new RegExp(
   '^-([a-zA-Z0-9])(?: (<?[^\\[\\] >]+>?))?$'
 );
+
+var PositionalParameter = function() { };
+
+var _name = '<([_a-zA-Z0-9]+)>|([_a-zA-Z0-9]+)';
+
+PositionalParameter.nameRegex = new RegExp(
+  "^\\[("+_name+")(\\s*\\[\\s*\\1\\s*\\[\\.\\.\\.?\\]\\])?\\]$|" +
+  "^("+_name+")(\\s*\\[\\s*\\5\\s*\\[\\.\\.\\.?\\]\\])?$");
+
+PositionalParameter.build = function(argumentz) {
+  var p = new PositionalParameter();
+  var argsArr = new Array(argumentz.length); // we need arguments as an Array
+  for (var i = argumentz.length; i--; ) { argsArr[i] = argumentz[i]; }
+  r = p._applyDefinition(argsArr); // throws syntax error
+  return r;
+};
+
+PositionalParameter.prototype = {
+  _isPositionalParameter : true,
+  toString : function() {
+    return this._intern + '{' + this._min + (this._isGlob ? ',' : '') + '}';
+  },
+  intern : function() { return this._intern; },
+  isRequired : function() { return (this._min > 0); },
+  getSyntaxString : function() { return this._syntaxString; },
+  getSyntaxName   : function() { return this._syntaxName; },
+  desc : function() { return this._desc; },
+  getLabel : function() { // ick for now same as ..
+    var str = this.intern().replace(/[_-]/g, ' ');
+    return str.length > 1 ? str : null;
+  },
+  _applyDefinition : function(args) {
+    var s;
+    this._parseName(args.shift());
+    this._desc = [];
+    while ((s = args.shift())) {
+      if ('string' != typeof(s)) {
+        throw new SyntaxSyntaxError('for now can\'t handle "'+s+'" here.');
+      }
+      this._desc.push(s);
+    }
+    return this; // allow factory method
+  },
+  _parseName : function(mixed) {
+    if ('string' != typeof(mixed)) {
+      throw new SyntaxSyntaxError(
+        "needed string for first argument, had: "+mixed);
+    }
+    var md = PositionalParameter.nameRegex.exec(mixed);
+    if (!md) throw new SyntaxSyntaxError(
+      'invalid argument definition string: "'+mixed+'" -- expecting '+
+      '"<foo>", "[<foo>]", "<foo>[<foo>[..]]" or "[<foo>[<foo>[..]]]"'
+    );
+    this._syntaxString = md[0];
+    if (md[1]) {
+      this._min = 0;
+      this._syntaxName = md[1];
+      this._intern = md[3] || md[2];
+      if (md[4]) {
+        this._isGlob = true;
+      }
+    } else {
+      this._min = 1;
+      this._syntaxName = md[5];
+      this._intern = md[7] || md[6];
+      if (md[8]) {
+        this._isGlob = true;
+      }
+    }
+  }
+};
+
+
 var Command = function() { };
 Command.prototype = {
+  toString : function() { return 'fuckparse command'; },
   commandInit : function() {
     this.parameters = [];
     this.paramsHash = {};
@@ -342,13 +417,8 @@ Command.prototype = {
       // via defaults
   },
   on : function() {
-    param = Parameter.build(arguments);
-    if (undefined != this.paramsHash[param.intern()]) {
-      throw new SyntaxSyntaxError("no redefining: "+param.intern());
-    }
-    var paramIdx = this.parameters.length;
-    this.parameters[paramIdx] = param;
-    this.paramsHash[param.intern()] = paramIdx;
+    var param = OptionalParameter.build(arguments);
+    var paramIdx = this._addParam(param);
     var which = ['shorts', 'longs'], w;
     for (w = which.length; w--;) { // @todo refactor after unit tests
       for (var i = param[which[w]].length; i--;) {
@@ -359,6 +429,23 @@ Command.prototype = {
       }
     }
     return param;
+  },
+  arg : function() {
+    var param = PositionalParameter.build(arguments);
+    if (undefined != this.paramsHash[param.intern()]) {
+      throw new SyntaxSyntaxError("no redefining: "+param.intern());
+    }
+    this._addParam(param);
+    return param;
+  },
+  _addParam : function (param) {
+    if (undefined != this.paramsHash[param.intern()]) {
+      throw new SyntaxSyntaxError("no redefining: "+param.intern());
+    }
+    var paramIdx = this.parameters.length;
+    this.parameters[paramIdx] = param;
+    this.paramsHash[param.intern()] = paramIdx;
+    return paramIdx;
   },
   parse : function(args) {
     this.argv = this._consume ? args : args.slice(0);
@@ -494,15 +581,28 @@ Command.prototype = {
   printHelp : function() {
     this.c.err.puts(this.strong('usage: ')+this.usage());
     var rows = [];
+    var o, a, i, j, p, desLines;
     if (this.parameters.length) {
-      rows.push(['header', this.strong('options:')]);
-      for (var i=0; i<this.parameters.length; i++) {
-        var p = this.parameters[i];
+      for (i=0; i<this.parameters.length; i++) {
+        p = this.parameters[i];
+        if (! p._isOptionalParameter) break;
+        if (!o) (o = 1) && rows.push(['header', this.strong('options:')]);
         var descLines = p.desc();
         if (descLines.length == 0) descLines = [p.getLabel() || ''];
         rows.push(['row', (p.getShortSyntaxDesc() || ''),
           (p.getLongSyntaxDesc() || ''), descLines[0]]);
-        for (var j = 1; j < descLines.length; j++) {
+        for (j = 1; j < descLines.length; j++) {
+          rows.push(['row', '', '', descLines[j]]);
+        }
+      }
+      for ( ; i < this.parameters.length; i++) {
+        p = this.parameters[i];
+        if (! p._isPositionalParameter) continue; // note
+        if (!a) (a = 1) && rows.push(['header', this.strong('arguments:')]);
+        descLines = p.desc();
+        if (descLines.length == 0) descLines = [p.getLabel() || ''];
+        rows.push(['row','',p.getSyntaxName(), descLines[0]]);
+        for (j = 1; j < descLines.length; j++) {
           rows.push(['row', '', '', descLines[j]]);
         }
       }
@@ -520,14 +620,20 @@ Command.prototype = {
     return this._interpreterName;
   },
   usage : function() {
-    var parts = [];
-    var opts = [];
+    var parts = [], opts = [], args = [], p;
     for (var i = 0; i < this.parameters.length; i++) {
-      opts.push('['+this.parameters[i].getShortestSyntax()+']');
+      p = this.parameters[i];
+      if (! p._isOptionalParameter) break;
+      opts.push('['+p.getShortestSyntax()+']');
+    }
+    for ( ; i < this.parameters.length; i++) {
+      p = this.parameters[i];
+      if (! p._isPositionalParameter) continue; // contrast w/ above!
+      args.push(p.getSyntaxString());
     }
     parts.push(this.getProgramName());
     if (opts.length) parts.push(opts.join(' '));
-    if ('meh') parts.push('[args]');
+    if (args.length) parts.push(args.join(' '));
     return parts.join(' ');
   },
   invite : function() {
