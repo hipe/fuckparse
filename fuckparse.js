@@ -4,8 +4,7 @@
 *
 */
 
-var sys  = require('sys'),
-    util = require('util'),
+var util = require('util'),
     path = require('path');
 
 var fuckparse = exports;
@@ -111,7 +110,7 @@ var SyntaxSyntaxError = function(msg) {
   Error.captureStackTrace && Error.captureStackTrace(this, SyntaxSyntaxError);
 };
 exports.SyntaxSyntaxError = SyntaxSyntaxError; // for lib/
-util.inherits(SyntaxSyntaxError, Error);
+util.inherits(SyntaxSyntaxError, Error); // @todo what does this do exactly
 
 /**
  * setter/getter for description strings for things.
@@ -422,16 +421,220 @@ PositionalParameter.prototype = {
 };
 
 
-var Command = function() { };
-exports.Command = Command; // for lib/
+/**
+ * The Execution context is alive through the lifecycle of the request,
+ * as it changes hands through the entrypoint command and any
+ * sub-commands.  It has a handle to the stderr and any stdout stream,
+ * and a Request object, which holds the result values of the parsed
+ * arguments as they get processed progressively.
+ */
+var ExecutionContext = (exports.ExecutionContext = function(){});
+ExecutionContext.prototype = {
+  out     : null, // not used yet @todo
+  err     : require('sys'), // haha w/e
+  request : null // set this at the earliest processing of the actual args
+};
+
+
+/**
+ * The state of a Command object should not change during the execution of
+ * a request.  Any data required for the parsing and dispatching of a command
+ * is held here and disposed of *before* the or the request is returned and/or
+ * request is executed (parse() vs. run()).
+ */
+var Run = (exports.Run = function(cmd, executionContext) {
+  this.ec = executionContext;
+  this.i = 0;   // the offset in argv that you're parsing
+  this.cmd = cmd;
+});
+
+Run.prototype = {
+  toString : function() { return 'Run['+(this.cmd.toString())+']'; },
+  parse : function(argv) {
+    this.argv = this.cmd._consume ? argv : argv.slice(0);
+    this._interpreterName = this.argv.shift();
+    this._programName = this.argv.shift();
+    this._takesArgs = false;
+    var p = this.cmd.parameters;
+    for (var i = 0; i < p.length && !p[i]._isPositionalParameter; i++);
+    this._takesArgs = i < p.length;
+    if (! this._parseOpts() || ! this._parseArgs()) return false;
+    this._applyDefaults();
+    return this.ec.request;
+  },
+  programName : function() {
+    return path.basename(this._programName);
+  },
+  _parseOpts : function() {
+    while (this.i < this.argv.length) {
+      var curTok = this.argv[this.i];
+      if ('-' == curTok.substr(0,1)) {
+        if (!this._parseOpt(curTok)) return false;
+      } else if (this._takesArgs) {
+        return true;
+      } else if (this._skipOverUnparsableOptions) {
+        this.i++;
+        continue;
+      } else {
+        return this.cmd.handleUnexpectedArgument(curTok, this.ec);
+      }
+    }
+    return true;
+  },
+  _parseOpt : function(tok) {
+    var md = (/^(-(?:-([^=]+)|([^=]*)))(?:=(.+)|(.*))$/).exec(tok); //ballsy
+    var asUsed = md[1], longStem = md[2], shortStem = md[3], eqArg = md[4],
+      xtra = (md[5] || ''), eachStem, eachAsUsed, i, last;
+    var useLong = undefined == longStem ? null : (longStem + xtra);
+    var useShort = undefined == shortStem ? null : (shortStem + xtra);
+    var which = null == useShort ? 'longs' : 'shorts';
+    if ('longs' == which) {
+      eachStem = [useLong]; eachAsUsed = [asUsed];
+    } else {
+      md = (/^([^0-9]*)(.*)$/).exec(useShort);
+      if (md[1].length > 0 && md[2].length > 0) {
+          // haha -xkcd20=xd6 fml
+        if (eqArg) return this.cmd.handleAmbiguousDelim(md[2], eqArg, this.ec);
+        useShort = md[1]; eqArg = md[2];
+      }
+      eachStem = useShort == '' ? [''] : useShort.split('');
+      eachAsUsed = Array(eachStem.length);
+      for (i=eachStem.length; i--;) eachAsUsed[i] = '-'+eachStem[i];
+    }
+    var hashLookup = this.cmd[which+'Hash'], r;
+    for (i = 0, last = eachStem.length-1; i <= last; i++) {
+      var stem = eachStem[i], paramIdx = hashLookup[stem], p;
+      asUsed = eachAsUsed[i];
+      if (undefined == paramIdx){
+        if (!(p = this.cmd._getOfficious(useShort || useLong, which))) {
+          return this.cmd.handleUnrecognizedOption(asUsed, this.ec);
+        }
+      } else {
+        p = this.cmd.parameters[paramIdx];
+      }
+      r = this._parseArgvWithOptParam(p, asUsed, i == last ? eqArg : undefined);
+      if (!r) return r;
+    }
+    return r; // should not be semantic only bool true here
+  },
+  _parseArgvWithOptParam : function(p, asUsed, eqArg) {
+    var useValue = undefined, consumeAmt = 1;
+    if (undefined == eqArg) {
+      if (p.takesArgument()) {
+        if (this.i < (this.argv.length - 1) &&
+          '-' != this.argv[this.i + 1].substr(0,1)) {
+            consumeAmt += 1;
+            useValue = this.argv[this.i +1];
+        } else if (p.argumentIsRequired()) {
+          return this.cmd.handleMissingRequiredOptionArgument(asUsed, this.ec);
+        }
+      }
+    } else {
+      if (!p.takesArgument())
+        return this.cmd.handleUnexpectedOptionArgument(eqArg, asUsed, this.ec);
+      useValue = eqArg;
+    }
+    if (!this._acceptOptionalParamValue(p, useValue, asUsed)) return false;
+    while (consumeAmt--) this.argv.shift();
+    return true;
+  },
+  _acceptOptionalParamValue : function(p, useValue, asUsed) {
+    var req = this.ec.request;
+    if (-1 == req.keys.indexOf(p.intern())) {
+      req.keys.push(p.intern());
+      if (p.isRepeatable()) {
+        if (p.takesArgument()) {
+          req.values[p.intern()] = [];
+        } else {
+          req.values[p.intern()] = 0;
+        }
+      }
+    }
+    if (p.isRepeatable()) {
+      if (p.takesArgument()) {
+        req.values[p.intern()].push(useValue || true);
+      } else {
+        req.values[p.intern()] += 1;
+      }
+    } else {
+      req.values[p.intern()] = useValue || true;
+    }
+    if (p.hasFunction() && false ==
+      p.getFunction().call(this.ec, useValue || true, p, asUsed)) return false;
+    return true;
+  },
+  _parseArgs : function() {
+    var p;
+    this.ii = 0; // the index into the parameters queue
+    var parameters = this.cmd.buildPositionalParametersQueue();
+    while (this.i < this.argv.length && this.ii < parameters.length) {
+      p = parameters[this.ii];
+      this._acceptPositionalParamValue(p); // always ok, advances counters
+    }
+    for ( ; this.ii < parameters.length; this.ii ++) {
+      p = parameters[this.ii];
+      if (p._min > 0) {
+        if (-1 != this.ec.request.keys.indexOf(p.intern())) continue;
+          // above is for globs. they don't advance ii.
+        return this.cmd.handleMissingRequiredPositional(p, this.ec);
+      }
+    }
+    if (this.i < this.argv.length && ! this.cmd._subcommands) {
+      return this.cmd.handleUnexpectedArgument(this.argv[this.i], this.ec);
+    }
+    return true;
+  },
+  _acceptPositionalParamValue : function(p) {
+    var value = this.argv[this.i]; // should always exist
+    var req = this.ec.request;
+    if (-1 == req.keys.indexOf(p.intern())) {
+      req.keys.push(p.intern());
+      if (p._isGlob) {
+        req.values[p.intern()] = [value];
+      } else {
+        req.values[p.intern()] = value;
+        this.ii ++;
+      }
+    } else if (p._isGlob) {
+      req.values[p.intern()].push(value);
+    } else {
+      throw new RuntimeError("unexpected clobber, value already exists for "+
+        '"' + this.intern() + '"');
+    }
+    this.i ++;
+  },
+  _applyDefaults : function() {
+    var parameters = this.cmd.parameters, req = this.ec.request, p;
+    for (var i = parameters.length; i--; ) {
+      if (!parameters[i]._defaultIsDefined) continue;
+      p = parameters[i];
+      if (-1 != req.keys.indexOf(p.intern())) continue;
+      req.values[p.intern()] = p._default;
+      req.keys.push(p.intern());
+    }
+  }
+};
+
+/**
+ * a Command is a syntactic and declarative structure that represents
+ * the shape of the command in terms of its options and arguments.  It should
+ * not change state throughout the processing of a request.
+ *
+ * It has handler methods for all the UI-level error messages that the
+ * library can emit.  These are high up in the API here so the client can more
+ * easily override them.
+ */
+var Command = exports.Command = function(){ };
+
 Command.prototype = {
-  toString : function() { return 'fuckparse command'; },
+  toString : function() {
+    return 'Command' + (this._intern ? (': '+this._intern) : '');
+  },
   commandInit : function() {
     this.parameters = [];
     this.paramsHash = {};
     this.shortsHash = {};
     this.longsHash = {};
-    this.c = { err : sys }; // execution context, (cout, cerr, request)
     this._consume = true; // alters the argv passed to parse(), @todo setters
     this._skipOverUnparsableOptions = false; // @todo setters.  This setting
       // has no meaning if the command interface defines any arguments.
@@ -469,8 +672,15 @@ Command.prototype = {
     this._addParam(param);
     return param;
   },
-  // convenience accessor for api
-  positionalParameters : function() {
+  parse : function(args, executionContext) {
+    if (!executionContext) {
+      executionContext = new ExecutionContext();
+      executionContext.request = new Request();
+    }
+    // use _lastRun only for ui stuffs on error!!
+    return (this._lastRun = new Run(this, executionContext)).parse(args);
+  },
+  buildPositionalParametersQueue : function() {
     var arr = [];
     for (var i = 0; i < this.parameters.length; i++) {
       if (this.parameters[i]._isPositionalParameter)
@@ -478,26 +688,34 @@ Command.prototype = {
     }
     return arr;
   },
-  handleUnrecognizedOption : function(asUsed) {
-    return this._error('Unrecognized option '+asUsed);
+  // output formatting & display
+  handleUnrecognizedOption : function(asUsed, ec) {
+    return this._error('Unrecognized option '+asUsed, ec);
   },
-  handleUnexpectedOptionArgument : function(eqArg, asUsed) {
+  handleUnexpectedOptionArgument : function(eqArg, asUsed, ec) {
     return this._error(
-      'Unexpected argument "'+eqArg+'" '+'for '+asUsed);
+      'Unexpected argument "'+eqArg+'" '+'for '+asUsed, ec);
   },
-  handleMissingRequiredOptionArgument : function(asUsed) {
+  handleMissingRequiredOptionArgument : function(asUsed, ec) {
     return this._error('Missing required argument for "'+
-      asUsed+'"');
+      asUsed+'"', ec);
   },
-  handleAmbiguousDelim : function(a, b) {
+  handleAmbiguousDelim : function(a, b, ec) {
      return this._error("Ambiguous parameter/argument "+
-     'delimiter: "'+a+'", "'+b+'"');
+     'delimiter: "'+a+'", "'+b+'"', ec);
   },
-  handleUnexpectedArgument : function(curTok) {
-    return this._error('Unexpected argument: "'+curTok+'"');
+  handleUnexpectedArgument : function(curTok, ec) {
+    return this._error('Unexpected argument: "'+curTok+'"', ec);
   },
-  handleMissingRequiredPositional : function(p) {
-    return this._error("expecting "+p.syntaxName());
+  handleMissingRequiredPositional : function(p, ec) {
+    return this._error("expecting "+p.syntaxName(), ec);
+  },
+  _error : function(msg, context) {
+    msg && context.err.puts(msg);
+    context.err.puts(this.strong('usage: ') + this.usage());
+    var str;
+    (str = this.invite()) && context.err.puts(str);
+    return false; // important
   },
   _addParam : function (param) {
     if (undefined != this.paramsHash[param.intern()]) {
@@ -508,188 +726,11 @@ Command.prototype = {
     this.paramsHash[param.intern()] = paramIdx;
     return paramIdx;
   },
-  parse : function(args) {
-    this.argv = this._consume ? args : args.slice(0);
-    this._interpreterName = this.argv.shift();
-    this._programName = this.argv.shift();
-    this._takesArgs = false;
-    for (var i = this.parameters.length; i--; ) {
-      if (this.parameters[i]._isPositionalParameter) {
-        this._takesArgs = true;
-        break;
-      }
-    }
-    if (! this._parseOpts() || ! this._parseArgs()) return false;
-    this._applyDefaults();
-    return this.c.request;
-  },
-  _parseOpts : function() {
-    this.i = 0;
-    while (this.i < this.argv.length) {
-      var curTok = this.argv[this.i];
-      if ('-' == curTok.substr(0,1)) {
-        if (!this._parseOpt(curTok)) return false;
-      } else if (this._takesArgs) {
-        return true;
-      } else if (this._skipOverUnparsableOptions) {
-        this.i++;
-        continue;
-      } else {
-        return this.handleUnexpectedArgument(curTok);
-      }
-    }
-    return true;
-  },
-  _parseArgs : function() {
-    var p;
-    this.ii = 0; // parameter index
-    while (this.ii < this.parameters.length && this.i < this.argv.length) {
-      p = this.parameters[this.ii];
-      if (! p._isPositionalParameter) {
-        this.ii++;
-        continue;
-      }
-      this._acceptPositionalParamValue(p); // always ok, advances counters
-    }
-    p = null;
-    for ( ; this.ii < this.parameters.length; this.ii ++) {
-      p = this.parameters[this.ii];
-      if (!p._isPositionalParameter) continue;
-      if (p._min > 0) {
-        if (-1 != this._getRequest().keys.indexOf(p.intern())) continue;
-        return this.handleMissingRequiredPositional(p);
-      }
-    }
-    if (this.i < this.argv.length && ! this._subcommands) {
-      return this.handleUnexpectedArgument(this.argv[this.i]);
-    }
-    return true;
-  },
-  _applyDefaults : function() {
-    var p, r;
-    for (var i = this.parameters.length; i--; ) {
-      if (!this.parameters[i]._defaultIsDefined) continue;
-      p = this.parameters[i];
-      r = this._getRequest();
-      if (-1 != r.keys.indexOf(p.intern())) continue;
-      r.values[p.intern()] = p._default;
-      r.keys.push(p.intern());
-    }
-  },
-  _parseOpt : function(tok) {
-    var md = (/^(-(?:-([^=]+)|([^=]*)))(?:=(.+)|(.*))$/).exec(tok); //ballsy
-    var asUsed = md[1], longStem = md[2], shortStem = md[3], eqArg = md[4],
-      xtra = (md[5] || ''), eachStem, eachAsUsed, i, last;
-    var useLong = undefined == longStem ? null : (longStem + xtra);
-    var useShort = undefined == shortStem ? null : (shortStem + xtra);
-    var which = null == useShort ? 'longs' : 'shorts';
-    if ('longs' == which) {
-      eachStem = [useLong]; eachAsUsed = [asUsed];
-    } else {
-      md = (/^([^0-9]*)(.*)$/).exec(useShort);
-      if (md[1].length > 0 && md[2].length > 0) {
-          // haha -xkcd20=xd6 fml
-        if (eqArg) return this.handleAmbiguousDelim(md[2], eqArg);
-        useShort = md[1]; eqArg = md[2];
-      }
-      eachStem = useShort == '' ? [''] : useShort.split('');
-      eachAsUsed = Array(eachStem.length);
-      for (i=eachStem.length; i--;) eachAsUsed[i] = '-'+eachStem[i];
-    }
-    var hashLookup = this[which+'Hash'], r;
-    for (i = 0, last = eachStem.length-1; i <= last; i++) {
-      var stem = eachStem[i], paramIdx = hashLookup[stem], p;
-      asUsed = eachAsUsed[i];
-      if (undefined == paramIdx){
-        if (!(p = this._getOfficious(useShort || useLong, which))) {
-          return this.handleUnrecognizedOption(asUsed);
-        }
-      } else {
-        p = this.parameters[paramIdx];
-      }
-      r = this._parseArgvWithOptParam(p, asUsed, i == last ? eqArg : undefined);
-      if (!r) return r;
-    }
-    return r; // should not be semantic only bool true here
-  },
-  _parseArgvWithOptParam : function(p, asUsed, eqArg) {
-    var useValue = undefined, consumeAmt = 1;
-    if (undefined == eqArg) {
-      if (p.takesArgument()) {
-        if (this.i < (this.argv.length - 1) &&
-          '-' != this.argv[this.i + 1].substr(0,1)) {
-            consumeAmt += 1;
-            useValue = this.argv[this.i +1];
-        } else if (p.argumentIsRequired()) {
-          return this.handleMissingRequiredOptionArgument(asUsed);
-        }
-      }
-    } else {
-      if (!p.takesArgument())
-        return this.handleUnexpectedOptionArgument(eqArg, asUsed);
-      useValue = eqArg;
-    }
-    if (!this._acceptOptionalParamValue(p, useValue, asUsed)) return false;
-    while (consumeAmt--) this.argv.shift();
-    return true;
-  },
-  _acceptOptionalParamValue : function(p, useValue, asUsed) {
-    var req = this._getRequest();
-    if (-1 == req.keys.indexOf(p.intern())) {
-      req.keys.push(p.intern());
-      if (p.isRepeatable()) {
-        if (p.takesArgument()) {
-          req.values[p.intern()] = [];
-        } else {
-          req.values[p.intern()] = 0;
-        }
-      }
-    }
-    if (p.isRepeatable()) {
-      if (p.takesArgument()) {
-        req.values[p.intern()].push(useValue || true);
-      } else {
-        req.values[p.intern()] += 1;
-      }
-    } else {
-      req.values[p.intern()] = useValue || true;
-    }
-    if (p.hasFunction() && false ==
-      p.getFunction().call(this, useValue || true, p, asUsed)) return false;
-    return true;
-  },
-  _acceptPositionalParamValue : function(p) {
-    var value = this.argv[this.i]; // should always exist
-    var req = this._getRequest();
-    if (-1 == req.keys.indexOf(p.intern())) {
-      req.keys.push(p.intern());
-      if (p._isGlob) {
-        req.values[p.intern()] = [value];
-      } else {
-        req.values[p.intern()] = value;
-        this.ii ++;
-      }
-    } else if (p._isGlob) {
-      req.values[p.intern()].push(value);
-    } else {
-      throw new RuntimeError("unexpected clobber, value already exists for "+
-        '"' + this.intern() + '"');
-    }
-    this.i ++;
-  },
-  _error : function(msg) {
-    msg && this.c.err.puts(msg);
-    this.c.err.puts(this.strong('usage: ') + this.usage());
-    var str;
-    (str = this.invite()) && this.c.err.puts(str);
-    return false; // important
-  },
-  // output formatting & display
   color : Color.methods.color,
   tableize : Table.methods.render,
   strong : function(s) { return this.color(s, 'bold', 'green'); },
-  printHelp : function() {
-    this.c.err.puts(this.strong('usage: ')+this.usage());
+  printHelp : function(context) {
+    context.err.puts(this.strong('usage: ')+this.usage());
     var rows = [];
     var o, a, i, j, p, desLines;
     for (i=0; i<this.parameters.length; i++) {
@@ -709,7 +750,7 @@ Command.prototype = {
       [{align:'right', padRight:'    '},
        {align:'left',  padRight:'      '},
        {align:'left'}
-      ],this.c.err);
+      ], context.err);
   },
   _argumentsHelp : function(rows) {
     var a = false;
@@ -724,12 +765,6 @@ Command.prototype = {
         rows.push(['row', '', '', descLines[j]]);
       }
     }
-  },
-  _getRequest : function() {
-    return this.c.request || ( this.c.request = new Request() );
-  },
-  getProgramName : function() {
-    return path.basename(this._programName);
   },
   getInterpreterName : function() {
     return this._interpreterName;
@@ -746,14 +781,14 @@ Command.prototype = {
       if (! p._isPositionalParameter) continue;
       args.push(p.syntaxString());
     }
-    parts.push(this.getProgramName());
+    parts.push(this._lastRun.programName());
     if (opts.length) parts.push(opts.join(' '));
     if (args.length) parts.push(args.join(' '));
     return parts.join(' ');
   },
   invite : function() {
     if (this.officious.enabled.help)
-      return this.strong(this.getProgramName()+' -h')+' for help.';
+      return this.strong(this._lastRun.programName()+' -h')+' for help.';
   },
   _getOfficious : function(stem, shortsOrLongs) {
     var idx = this.officious[shortsOrLongs][stem];
@@ -763,13 +798,15 @@ Command.prototype = {
     return this[name+'OfficiousCommand'](); // e.g. helpOfficiousCommand()
   },
   helpOfficiousCommand : function() {
-    if (this._helpOfficiousCommand) return this._helpOfficiousCommand;
-    this._helpOfficiousCommand = this.on('-h', '--help', 'this screen',
-      this.onHelp );
+    if (!this._helpOfficiousCommand) {
+      var cmd = this;
+      this._helpOfficiousCommand = this.on('-h', '--help', 'this screen',
+        function(){ return cmd.onHelp(this); });
+    }
     return this._helpOfficiousCommand;
   },
-  onHelp : function() {
-    this.printHelp();
+  onHelp : function(context) {
+    this.printHelp(context);
     return false; // don't do any further processing, we are done.
   }
 };
