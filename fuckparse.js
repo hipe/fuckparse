@@ -17,7 +17,8 @@ fuckparse.oxfordComma = function() {
   var args = []; // es muss sein
   for (var i = arguments.length ; i--; ) { args[i] = arguments[i]; }
   var each = ('function' == typeof(args[args.length-1])) ? args.pop() : null;
-  var sep = args[2] || ', ', lastSep = args[1] || ' and ', arr = args[0];
+  var arr = args[0].slice(0); // we pop it below, don't change orig!!
+  var sep = args[2] || ', ', lastSep = args[1] || ' and ';
   if (each) { for(i = arr.length; i--;) arr[i] = each(arr[i]); }
   if (arr.length <= 1) return arr[0]; // truly undefined, for now
   var parts = [[arr.pop(), arr.pop()].reverse().join(lastSep)];
@@ -109,7 +110,46 @@ var SyntaxSyntaxError = function(msg) {
   this.message = msg;
   Error.captureStackTrace && Error.captureStackTrace(this, SyntaxSyntaxError);
 };
+exports.SyntaxSyntaxError = SyntaxSyntaxError; // for lib/
 util.inherits(SyntaxSyntaxError, Error);
+
+/**
+ * setter/getter for description strings for things.
+ *
+ * Inspired by ruby OptionParser, description strings are allowed to be
+ * specified as arrays of strings so the author can have control
+ * over how the description string is broken up across lines.
+ * In practice this is more optimal than dynamic truncation and
+ * "ellipsification" of strings
+ *
+ *   as getter:
+ * When used as a getter, always returns an array.
+ * This array should not be modified!  Whether or not it is a reference
+ * to the original is undefined.
+ *
+ *   as setter:
+ * If setter is passed one element,
+ * it should be an array of strings or a string.  If passed more than
+ * one argument it is assumed to be a list of strings.
+ * These strings are appended to any existing description string.
+ *
+ */
+exports.commonDesc = function() {
+  if (arguments.length == 0) return (this._desc || []);
+  if (!this._desc) this._desc = [];
+  if (arguments.length == 1) {
+    if ('string' == typeof(arguments[0])) {
+      this._desc.push(arguments[0]);
+    } else {
+      for (var i = 0; i < arguments[0].length; i ++)
+        this._desc.push(arguments[0][i]);
+    }
+  } else {
+    for (i = 0; i < arguments.length; i++)
+      this._desc.push(arguments[i]);
+  }
+  return null;
+};
 
 var OptionalParameter = function() {
   this.optionalParameterInit();
@@ -158,22 +198,7 @@ OptionalParameter.prototype = {
   isNoable : function() { return this._isNoable; },
   hasFunction : function(){ return !! this._f; },
   getFunction : function(){ return this._f; },
-  desc : function() {
-    if (arguments.length == 0) return (this._desc || []);
-    if (!this._desc) this._desc = [];
-    if (arguments.length == 1) {
-      if ('string' == typeof(arguments[0])) {
-        this._desc.push(arguments[0]);
-      } else {
-        for (var i = 0; i < arguments[0].length; i ++)
-          this._desc.push(arguments[0][i]);
-      }
-    } else {
-      for (i = 0; i < arguments.length; i++)
-        this._desc.push(arguments[i]);
-    }
-    return null;
-  },
+  desc : exports.commonDesc,
   toString : function() {
     return this.getLongestSyntax();
   },
@@ -221,7 +246,7 @@ OptionalParameter.prototype = {
   casual : function() {
     return this.longs.length ? ('--'+this.longs[0]) : ('-'+this.shorts[0]);
   },
-  getLabel : function() {
+  label : function() {
     var str = this.intern().replace(/[_-]/g, ' ');
     return str.length > 1 ? str : null;
   },
@@ -348,10 +373,10 @@ PositionalParameter.prototype = {
   },
   intern : function() { return this._intern; },
   isRequired : function() { return (this._min > 0); },
-  getSyntaxString : function() { return this._syntaxString; },
-  getSyntaxName   : function() { return this._syntaxName; },
+  syntaxString : function() { return this._syntaxString; },
+  syntaxName   : function() { return this._syntaxName; },
   desc : function() { return this._desc; },
-  getLabel : function() { // ick for now same as ..
+  label : function() { // ick for now same as ..
     var str = this.intern().replace(/[_-]/g, ' ');
     return str.length > 1 ? str : null;
   },
@@ -398,6 +423,7 @@ PositionalParameter.prototype = {
 
 
 var Command = function() { };
+exports.Command = Command; // for lib/
 Command.prototype = {
   toString : function() { return 'fuckparse command'; },
   commandInit : function() {
@@ -414,10 +440,12 @@ Command.prototype = {
       longs   : { help : 0    }, shorts : { h : 0 }
     };
     this._stopOnDashDash = true; // @todo implement
-    this.request = null; // not set unless anything is parsed or set
-      // via defaults
   },
   on : function() {
+    if(arguments[0] && arguments[0].substr && '-' != arguments[0].substr(0,1)) {
+      require('./lib/subcommand'); // @lazy-load
+      return this._processSubcommandDefinition(arguments);
+    }
     var param = OptionalParameter.build(arguments);
     var paramIdx = this._addParam(param);
     var which = ['shorts', 'longs'], w;
@@ -432,12 +460,23 @@ Command.prototype = {
     return param;
   },
   arg : function() {
+    if (this._subcommands) throw new SyntaxSyntaxError(
+      "commands composed of subommands should not take arguments!");
     var param = PositionalParameter.build(arguments);
     if (undefined != this.paramsHash[param.intern()]) {
       throw new SyntaxSyntaxError("no redefining: "+param.intern());
     }
     this._addParam(param);
     return param;
+  },
+  // convenience accessor for api
+  positionalParameters : function() {
+    var arr = [];
+    for (var i = 0; i < this.parameters.length; i++) {
+      if (this.parameters[i]._isPositionalParameter)
+        arr.push(this.parameters[i]);
+    }
+    return arr;
   },
   handleUnrecognizedOption : function(asUsed) {
     return this._error('Unrecognized option '+asUsed);
@@ -458,7 +497,7 @@ Command.prototype = {
     return this._error('Unexpected argument: "'+curTok+'"');
   },
   handleMissingRequiredPositional : function(p) {
-    return this._error("expecting argument: "+p.getSyntaxName());
+    return this._error("expecting "+p.syntaxName());
   },
   _addParam : function (param) {
     if (undefined != this.paramsHash[param.intern()]) {
@@ -521,7 +560,7 @@ Command.prototype = {
         return this.handleMissingRequiredPositional(p);
       }
     }
-    if (this.i < this.argv.length) {
+    if (this.i < this.argv.length && ! this._subcommands) {
       return this.handleUnexpectedArgument(this.argv[this.i]);
     }
     return true;
@@ -639,10 +678,10 @@ Command.prototype = {
     this.i ++;
   },
   _error : function(msg) {
-    var i;
     msg && this.c.err.puts(msg);
-    this.c.err.puts(this.strong('usage: ')+this.usage());
-    (i = this.invite()) && this.c.err.puts(i);
+    this.c.err.puts(this.strong('usage: ') + this.usage());
+    var str;
+    (str = this.invite()) && this.c.err.puts(str);
     return false; // important
   },
   // output formatting & display
@@ -653,36 +692,38 @@ Command.prototype = {
     this.c.err.puts(this.strong('usage: ')+this.usage());
     var rows = [];
     var o, a, i, j, p, desLines;
-    if (this.parameters.length) {
-      for (i=0; i<this.parameters.length; i++) {
-        p = this.parameters[i];
-        if (! p._isOptionalParameter) continue;
-        if (!o) (o = 1) && rows.push(['header', this.strong('options:')]);
-        var descLines = p.desc();
-        if (descLines.length == 0) descLines = [p.getLabel() || ''];
-        rows.push(['row', (p.getShortSyntaxDesc() || ''),
-          (p.getLongSyntaxDesc() || ''), descLines[0]]);
-        for (j = 1; j < descLines.length; j++) {
-          rows.push(['row', '', '', descLines[j]]);
-        }
-      }
-      for (i=0 ; i < this.parameters.length; i++) {
-        p = this.parameters[i];
-        if (! p._isPositionalParameter) continue;
-        if (!a) (a = 1) && rows.push(['header', this.strong('arguments:')]);
-        descLines = p.desc();
-        if (descLines.length == 0) descLines = [p.getLabel() || ''];
-        rows.push(['row','',p.getSyntaxName(), descLines[0]]);
-        for (j = 1; j < descLines.length; j++) {
-          rows.push(['row', '', '', descLines[j]]);
-        }
+    for (i=0; i<this.parameters.length; i++) {
+      p = this.parameters[i];
+      if (! p._isOptionalParameter) continue;
+      if (!o) (o = 1) && rows.push(['header', this.strong('options:')]);
+      var descLines = p.desc();
+      if (descLines.length == 0) descLines = [p.label() || ''];
+      rows.push(['row', (p.getShortSyntaxDesc() || ''),
+        (p.getLongSyntaxDesc() || ''), descLines[0]]);
+      for (j = 1; j < descLines.length; j++) {
+        rows.push(['row', '', '', descLines[j]]);
       }
     }
+    this._argumentsHelp(rows);
     this.tableize(rows,
       [{align:'right', padRight:'    '},
        {align:'left',  padRight:'      '},
        {align:'left'}
       ],this.c.err);
+  },
+  _argumentsHelp : function(rows) {
+    var a = false;
+    for (var i=0 ; i < this.parameters.length; i++) {
+      var p = this.parameters[i];
+      if (! p._isPositionalParameter) continue;
+      if (!a) (a = 1) && rows.push(['header', this.strong('arguments:')]);
+      descLines = p.desc();
+      if (descLines.length == 0) descLines = [p.label() || ''];
+      rows.push(['row','',p.syntaxName(), descLines[0]]);
+      for (var j = 1; j < descLines.length; j++) {
+        rows.push(['row', '', '', descLines[j]]);
+      }
+    }
   },
   _getRequest : function() {
     return this.c.request || ( this.c.request = new Request() );
@@ -703,7 +744,7 @@ Command.prototype = {
     for (i = 0; i < this.parameters.length; i++) {
       p = this.parameters[i];
       if (! p._isPositionalParameter) continue;
-      args.push(p.getSyntaxString());
+      args.push(p.syntaxString());
     }
     parts.push(this.getProgramName());
     if (opts.length) parts.push(opts.join(' '));
@@ -732,6 +773,7 @@ Command.prototype = {
     return false; // don't do any further processing, we are done.
   }
 };
+
 var Request = function() {
   this.keys = [];
   this.values = {};
