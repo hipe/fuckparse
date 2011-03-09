@@ -701,7 +701,7 @@ Command.prototype = {
     return param;
   },
   parse : function(argv) {
-    return this.buildExecutionContext(argv).ec.parse.parse(argv);
+    return this.buildExecutionContext(argv).parse.parse(argv);
   },
   buildExecutionContext : function(argv) {
     var ec = new ExecutionContext();
