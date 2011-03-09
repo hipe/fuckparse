@@ -104,6 +104,17 @@ Table.methods.render = function(rows, colsOpts, cout) {
   tt.renderTo(cout);
 };
 
+// see implementation file.  this whole thing gets memoized.
+var Templite = exports.Templite = {
+  buildIfLooksLikeTemplate : function() {
+    return this._lazyLoad('buildIfLooksLikeTemplate', arguments);
+  },
+  _lazyLoad : function(fname, args) {
+    Templite = exports.Templite = require('./lib/templite').Templite;
+    return Templite[fname].apply(Templite, args);
+  }
+};
+
 var SyntaxSyntaxError = function(msg) {
   this.name = 'SyntaxSyntaxError';
   this.message = msg;
@@ -132,15 +143,38 @@ util.inherits(SyntaxSyntaxError, Error); // @todo what does this do exactly
  * one argument it is assumed to be a list of strings.
  * These strings are appended to any existing description string.
  *
+ * Experimentally the strings can contain {variables} that will expand
+ * to the value of methods or properties of the Command object.
+ *
  */
-exports.commonDesc = function() {
-  if (arguments.length == 0) return (this._desc || []);
-  if (!this._desc) this._desc = [];
+var commonDesc = exports.commonDesc = function() {
+  var i, t;
+  if (!this._desc) this._desc = []; // makes life easier :(
+  if (arguments.length == 0) {
+    if (!this._desc._checkedForTemplates) {
+      for (i = this._desc.length; i--; ) {
+        if ((t = Templite.buildIfLooksLikeTemplate(this._desc[i]))) {
+          this._desc[i] = t;
+          this._desc._hasTemplates = true;
+        }
+      }
+      this._desc._checkedForTemplates = true;
+    }
+    if (this._desc._hasTemplates) {
+      var map = new Array(this._desc.length);
+      for (i = this._desc.length; i--; ) {
+        map[i] = this._desc[i]._isTemplite ?
+          this._desc[i].run(this) : this._desc[i];
+      }
+      return map;
+    }
+    return this._desc;
+  }
   if (arguments.length == 1) {
     if ('string' == typeof(arguments[0])) {
       this._desc.push(arguments[0]);
     } else {
-      for (var i = 0; i < arguments[0].length; i ++)
+      for (i = 0; i < arguments[0].length; i ++)
         this._desc.push(arguments[0][i]);
     }
   } else {
@@ -197,7 +231,8 @@ OptionalParameter.prototype = {
   isNoable : function() { return this._isNoable; },
   hasFunction : function(){ return !! this._f; },
   getFunction : function(){ return this._f; },
-  desc : exports.commonDesc,
+  desc : commonDesc,
+  'default' : function() { return this._default; },
   toString : function() {
     return this.getLongestSyntax();
   },
@@ -352,7 +387,7 @@ var FuckMeShorter = new RegExp(
 
 var PositionalParameter = function() { };
 
-var _name = '<([_a-zA-Z0-9]+)>|([_a-zA-Z0-9]+)';
+var _name = '<([_a-zA-Z0-9][-_a-zA-Z0-9]*)>|([_a-zA-Z0-9][-_a-zA-Z0-9]*)';
 
 PositionalParameter.nameRegex = new RegExp(
   "^\\[("+_name+")(\\s*\\[\\s*\\1\\s*\\[\\.\\.\\.?\\]\\])?\\]$|" +
@@ -375,21 +410,29 @@ PositionalParameter.prototype = {
   isRequired : function() { return (this._min > 0); },
   syntaxString : function() { return this._syntaxString; },
   syntaxName   : function() { return this._syntaxName; },
-  desc : function() { return this._desc; },
+  desc : commonDesc,
   label : function() { // ick for now same as ..
     var str = this.intern().replace(/[_-]/g, ' ');
     return str.length > 1 ? str : null;
   },
   _applyDefinition : function(args) {
-    var s;
+    var s, opts;
     this._parseName(args.shift());
     this._desc = [];
-    while ((s = args.shift())) {
-      if ('string' != typeof(s)) {
-        throw new SyntaxSyntaxError('for now can\'t handle "'+s+'" here.');
+    while ((m = args.shift())) {
+      switch (typeof(m)) {
+        case 'string' : this._desc.push(m); break;
+        case 'object' :
+          if (opts) throw new SyntaxSyntaxError("can't specify more than one" +
+          ' options object for "'+this._intern+'"!');
+          opts = m;
+          break;
+        default :
+          throw new SyntaxSyntaxError('don\'t know what to do with "'+m+'"'+
+            ' for '+this._intern);
       }
-      this._desc.push(s);
     }
+    if (opts) this._processOpts(opts);
     return this; // allow factory method
   },
   _parseName : function(mixed) {
@@ -418,7 +461,24 @@ PositionalParameter.prototype = {
         this._isGlob = true;
       }
     }
-  }
+  },
+  _processOpts : function(opts) {
+    var i;
+    for (i in opts) {
+      switch (i) {
+        case 'default' : this._setDefault(opts[i]); break;
+        default : throw new SyntaxSyntaxError('unrecognized option: "'+i+'"');
+      }
+    }
+  },
+  _setDefault : function(value) {
+    if (0 != this._min) throw new SyntaxSyntaxError('it doesn\'t make sense '+
+      'to define a default value for required parameter "'+
+        this.syntaxString()+'"');
+    this._defaultIsDefined = true;
+    this._default = value;
+  },
+  'default' : function() { return this._default; } // for templates
 };
 
 
