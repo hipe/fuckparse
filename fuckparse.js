@@ -261,7 +261,8 @@ OptionalParameter.prototype = {
     );
   },
   _takeFunction : function(f) {
-    if (this._f) throw new Error("multiple functions passed in definition.");
+    if (this._f) throw new SyntaxSyntaxError(
+      "Cannot pass more than one function in definition.");
     this._f = f;
   },
   _processOpts : function(o) {
@@ -430,9 +431,19 @@ PositionalParameter.prototype = {
  */
 var ExecutionContext = (exports.ExecutionContext = function(){});
 ExecutionContext.prototype = {
-  out     : null, // not used yet @todo
-  err     : require('sys'), // haha w/e
-  request : null // set this at the earliest processing of the actual args
+  toString : function() {
+    return  'ExecutionContext:{parse:' + this.parse.toString() +
+              ',request:' + this.request.toString()+'}';
+  },
+  out     : require('sys'), // haha w/e
+  err     : require('sys'), // w/e w/e
+  request : null, // set this at the earliest processing of the actual args
+  parse   : null, // experimental
+
+  programName : function() {
+    if (!this.parse) return null;
+    return this.parse.programName();
+  }
 };
 
 
@@ -441,23 +452,34 @@ ExecutionContext.prototype = {
  * a request.  Any data required for the parsing and dispatching of a command
  * is held here and disposed of *before* the or the request is returned and/or
  * request is executed (parse() vs. run()).
+ *
+ * Experimentally this may hold configurable settings that alters the way
+ * argv is parsed, e.g. ignore unrecognized flags, stop on unrecognized flags,
+ * whether or not to alter the original passed argv array.  Not yet implemented.
  */
-var Run = (exports.Run = function(cmd, executionContext) {
+var Parse = (exports.Parse = function(cmd, executionContext) {
   this.ec = executionContext;
-  this.i = 0;   // the offset in argv that you're parsing
   this.cmd = cmd;
 });
 
-Run.prototype = {
-  toString : function() { return 'Run['+(this.cmd.toString())+']'; },
+Parse.prototype = {
+  i        : 0,     // the current offset into argv that you're about to parse
+  _consume : true,  // remove elements as you process them from argv @todo
+  //_stopOnDashDash : true, // @todo implement
+  _skipOverUnparsableOptions : false, // @todo setters.  This setting
+    // has no meaning if the command interface defines any arguments.
+
+  toString : function() {
+    return 'Parse:{i:'+this.i+',cmd:'+this.cmd.toString()+'}';
+  },
+  // this is the entrypoint parse
   parse : function(argv) {
-    this.argv = this.cmd._consume ? argv : argv.slice(0);
+    this.argv = this._consume ? argv : argv.slice(0);
     this._interpreterName = this.argv.shift();
     this._programName = this.argv.shift();
-    this._takesArgs = false;
-    var p = this.cmd.parameters;
-    for (var i = 0; i < p.length && !p[i]._isPositionalParameter; i++);
-    this._takesArgs = i < p.length;
+    return this.parseCommand();
+  },
+  parseCommand : function() {
     if (! this._parseOpts() || ! this._parseArgs()) return false;
     this._applyDefaults();
     return this.ec.request;
@@ -470,7 +492,7 @@ Run.prototype = {
       var curTok = this.argv[this.i];
       if ('-' == curTok.substr(0,1)) {
         if (!this._parseOpt(curTok)) return false;
-      } else if (this._takesArgs) {
+      } else if (this.cmd.hasPositionalParameters()) {
         return true;
       } else if (this._skipOverUnparsableOptions) {
         this.i++;
@@ -579,7 +601,7 @@ Run.prototype = {
         return this.cmd.handleMissingRequiredPositional(p, this.ec);
       }
     }
-    if (this.i < this.argv.length && ! this.cmd._subcommands) {
+    if (this.i < this.argv.length && ! this.cmd._unparsableOk) {
       return this.cmd.handleUnexpectedArgument(this.argv[this.i], this.ec);
     }
     return true;
@@ -628,24 +650,24 @@ var Command = exports.Command = function(){ };
 
 Command.prototype = {
   toString : function() {
-    return 'Command' + (this._intern ? (': '+this._intern) : '');
+    s = 'Command';
+    if (this._intern) s += '{intern:'+(this._intern)+'}';
+    else s += ':[root]';
+    return s;
   },
+  _unparsableOk : false, // can get set to true by extensions
   commandInit : function() {
     this.parameters = [];
     this.paramsHash = {};
     this.shortsHash = {};
     this.longsHash = {};
-    this._consume = true; // alters the argv passed to parse(), @todo setters
-    this._skipOverUnparsableOptions = false; // @todo setters.  This setting
-      // has no meaning if the command interface defines any arguments.
     this.officious = { // set officious.enabled.help = false
       enabled : { help : true }, list   : ['help'],
       longs   : { help : 0    }, shorts : { h : 0 }
     };
-    this._stopOnDashDash = true; // @todo implement
   },
   on : function() {
-    if(arguments[0] && arguments[0].substr && '-' != arguments[0].substr(0,1)) {
+    if (arguments[0] && arguments[0].substr && '-' != arguments[0].substr(0,1)){
       require('./lib/subcommand'); // @lazy-load
       return this._processSubcommandDefinition(arguments);
     }
@@ -663,22 +685,29 @@ Command.prototype = {
     return param;
   },
   arg : function() {
-    if (this._subcommands) throw new SyntaxSyntaxError(
-      "commands composed of subommands should not take arguments!");
-    var param = PositionalParameter.build(arguments);
-    if (undefined != this.paramsHash[param.intern()]) {
-      throw new SyntaxSyntaxError("no redefining: "+param.intern());
+    if (this._beforeArgHooks && ! this._beforeArgHooks(arguments)) return false;
+    var param = PositionalParameter.build(arguments), errmsg;
+    if (this._lastArg) {
+      if (this._lastArg._isGlob)
+        errmsg = 'a glob argument can only exist as the last argument';
+      else if (0 == this._lastArg._min && 0 != param._min)
+        errmsg = 'a required parameter cannot follow an optional parameter';
+      if (errmsg) throw new SyntaxSyntaxError('Invalid syntax sequence: '+
+        '"' + this._lastArg.syntaxString() + ' ' + param.syntaxString() + '": '+
+        errmsg);
     }
+    this._lastArg = param;
     this._addParam(param);
     return param;
   },
-  parse : function(args, executionContext) {
-    if (!executionContext) {
-      executionContext = new ExecutionContext();
-      executionContext.request = new Request();
-    }
-    // use _lastRun only for ui stuffs on error!!
-    return (this._lastRun = new Run(this, executionContext)).parse(args);
+  parse : function(argv) {
+    return this.buildExecutionContext(argv).ec.parse.parse(argv);
+  },
+  buildExecutionContext : function(argv) {
+    var ec = new ExecutionContext();
+    ec.request = new Request();
+    ec.parse = new Parse(this, ec, argv);
+    return ec;
   },
   buildPositionalParametersQueue : function() {
     var arr = [];
@@ -687,6 +716,11 @@ Command.prototype = {
         arr.push(this.parameters[i]);
     }
     return arr;
+  },
+  hasPositionalParameters : function() {
+    for (var i = 0; i < this.parameters.length &&
+      ! this.parameters[i]._isPositionalParameter; i++);
+    return i < this.parameters.length;
   },
   // output formatting & display
   handleUnrecognizedOption : function(asUsed, ec) {
@@ -710,11 +744,11 @@ Command.prototype = {
   handleMissingRequiredPositional : function(p, ec) {
     return this._error("expecting "+p.syntaxName(), ec);
   },
-  _error : function(msg, context) {
-    msg && context.err.puts(msg);
-    context.err.puts(this.strong('usage: ') + this.usage());
+  _error : function(msg, ctx) {
+    msg && ctx.err.puts(msg);
+    ctx.err.puts(this.strong('usage: ') + this.usage(ctx));
     var str;
-    (str = this.invite()) && context.err.puts(str);
+    (str = this.invite(ctx)) && ctx.err.puts(str);
     return false; // important
   },
   _addParam : function (param) {
@@ -729,8 +763,8 @@ Command.prototype = {
   color : Color.methods.color,
   tableize : Table.methods.render,
   strong : function(s) { return this.color(s, 'bold', 'green'); },
-  printHelp : function(context) {
-    context.err.puts(this.strong('usage: ')+this.usage());
+  printHelp : function(ctx) {
+    ctx.err.puts(this.strong('usage: ') + this.usage(ctx));
     var rows = [];
     var o, a, i, j, p, desLines;
     for (i=0; i<this.parameters.length; i++) {
@@ -746,11 +780,14 @@ Command.prototype = {
       }
     }
     this._argumentsHelp(rows);
+    this.renderHelpTable(rows, ctx);
+  },
+  renderHelpTable : function(rows, ctx) {
     this.tableize(rows,
-      [{align:'right', padRight:'    '},
+      [{align:'right', padRight:'   ', padLeft:' '},
        {align:'left',  padRight:'      '},
        {align:'left'}
-      ], context.err);
+      ], ctx.err);
   },
   _argumentsHelp : function(rows) {
     var a = false;
@@ -769,7 +806,7 @@ Command.prototype = {
   getInterpreterName : function() {
     return this._interpreterName;
   },
-  usage : function() {
+  usage : function(ctx) {
     var parts = [], opts = [], args = [], p, i;
     for (i = 0; i < this.parameters.length; i++) {
       p = this.parameters[i];
@@ -781,14 +818,14 @@ Command.prototype = {
       if (! p._isPositionalParameter) continue;
       args.push(p.syntaxString());
     }
-    parts.push(this._lastRun.programName());
+    parts.push(ctx.programName());
     if (opts.length) parts.push(opts.join(' '));
     if (args.length) parts.push(args.join(' '));
     return parts.join(' ');
   },
-  invite : function() {
+  invite : function(ctx) {
     if (this.officious.enabled.help)
-      return this.strong(this._lastRun.programName()+' -h')+' for help.';
+      return this.strong(ctx.programName()+' -h')+' for help.';
   },
   _getOfficious : function(stem, shortsOrLongs) {
     var idx = this.officious[shortsOrLongs][stem];
@@ -805,8 +842,8 @@ Command.prototype = {
     }
     return this._helpOfficiousCommand;
   },
-  onHelp : function(context) {
-    this.printHelp(context);
+  onHelp : function(ctx) {
+    this.printHelp(ctx);
     return false; // don't do any further processing, we are done.
   }
 };
@@ -820,7 +857,7 @@ Request.prototype = {
     var a = [];
     for (var i=0; i < this.keys.length; i++)
       a.push(this.keys[i]+':'+this.values[this.keys[i]]); // not json
-    return 'request:{'+a.join(',')+'}';
+    return 'Request:{'+a.join(',')+'}';
   }
 };
 
