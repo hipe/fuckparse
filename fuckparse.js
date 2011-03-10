@@ -761,12 +761,12 @@ Command.prototype = {
     return param;
   },
   parse : function(argv) {
-    return this.buildExecutionContext(argv).parse.parse(argv);
+    return this.buildExecutionContext().parse.parse(argv);
   },
-  buildExecutionContext : function(argv) {
+  buildExecutionContext : function() {
     var ec = new ExecutionContext();
     ec.request = new Request();
-    ec.parse = new Parse(this, ec, argv);
+    ec.parse = new Parse(this, ec);
     return ec;
   },
   buildPositionalParametersQueue : function() {
@@ -878,10 +878,13 @@ Command.prototype = {
       if (! p._isPositionalParameter) continue;
       args.push(p.syntaxString());
     }
-    parts.push(ctx.programName());
+    parts.push(this._invocationString(ctx));
     if (opts.length) parts.push(opts.join(' '));
     if (args.length) parts.push(args.join(' '));
     return parts.join(' ');
+  },
+  _invocationString : function(ctx) {
+    return ctx.programName();
   },
   invite : function(ctx) {
     if (this.officious.enabled.help)
