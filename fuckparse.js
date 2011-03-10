@@ -888,7 +888,7 @@ Command.prototype = {
   },
   invite : function(ctx) {
     if (this.officious.enabled.help)
-      return this.strong(ctx.programName()+' -h')+' for help.';
+      return this.strong(this._invocationString(ctx)+' -h')+' for help.';
   },
   _getOfficious : function(stem, shortsOrLongs) {
     var idx = this.officious[shortsOrLongs][stem];
