@@ -21,8 +21,8 @@ fuckparse.oxfordComma = function() {
   if (each) { for(i = arr.length; i--;) arr[i] = each(arr[i]); }
   if (arr.length <= 1) return arr[0]; // truly undefined, for now
   var parts = [[arr.pop(), arr.pop()].reverse().join(lastSep)];
-  if (arr.length) parts.push(arr.join(sep));
-  return parts.join(' ');
+  if (arr.length) parts.unshift(arr.join(sep) + sep);
+  return parts.join('');
 };
 
 fuckparse.oxfordComma.quote = function(s) { return '"' + s + '"'; };
